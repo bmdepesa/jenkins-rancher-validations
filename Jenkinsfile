@@ -157,125 +157,126 @@ if ( true == via_webhook() && (!(rancher_version ==~ rancher_version_regex)) ) {
   println("** This will **not** result in a pipeline run.")
   currentBuild.result = lastBuildResult()
 } else {
-
   try {
-
     node {
       wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'XTerm', 'defaultFg': 2, 'defaultBg':1]) {
+        withCredentials([ string(credentialsId: 'AWS_ACCESS_KEY_ID', variable: 'AWS_ACCESS_KEY_ID'),
+                          string(credentialsId: 'AWS_SECRET_ACCESS_KEY', variable: 'AWS_SECRET_ACCESS_KEY'),
+                          string(credentialsId: 'SLACK_TOKEN', variable: 'SLACK_TOKEN'),
+                          string(credentialsId: 'DO_ACCESSKEY_1.6', variable: 'DIGITALOCEAN_KEY')]) {  
+          jenkinsSlack('start')
+          checkout scm
 
-	jenkinsSlack('start')
-	checkout scm
+          stage('bootstrap') {
+            sh "./scripts/bootstrap.sh"
+          }
 
-	stage('bootstrap') {
-	  sh "./scripts/bootstrap.sh"
-	}
+          stage ('syntax') {
+            sh "docker run --rm  " +
+              "-v jenkins_home:/var/jenkins_home " +
+              "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke syntax\'"
+          }
 
-	stage ('syntax') {
-	  sh "docker run --rm  " +
-	    "-v jenkins_home:/var/jenkins_home " +
-	    "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke syntax\'"
-	}
+          stage ('lint') {
+            sh "docker run --rm  " +
+              "-v jenkins_home:/var/jenkins_home " +
+              "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke lint\'"
+          }
 
-	stage ('lint') {
-	  sh "docker run --rm  " +
-	    "-v jenkins_home:/var/jenkins_home " +
-	    "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke lint\'"
-	}
+          stage ('configure .env file') {
+            withEnv(["RANCHER_VERSION=${rancher_version}"]) {
+              sh "./scripts/configure.sh"
+            }
+          }
 
-	stage ('configure .env file') {
-	  withEnv(["RANCHER_VERSION=${rancher_version}"]) {
-	    sh "./scripts/configure.sh"
-	  }
-	}
+          stage ('deprovision Rancher Agents') {
+            sh "docker run --rm  " +
+              "-v jenkins_home:/var/jenkins_home " +
+              "--env-file .env " +
+              "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.deprovision\'"
+          }
 
-	stage ('deprovision Rancher Agents') {
-	  sh "docker run --rm  " +
-	    "-v jenkins_home:/var/jenkins_home " +
-	    "--env-file .env " +
-      "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.deprovision\'"
-	}
+          stage ('deprovision rancher/server') {
+            sh "docker run --rm  " +
+              "-v jenkins_home:/var/jenkins_home " +
+              "--env-file .env " +
+              "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.deprovision\'"
+          }
 
-	stage ('deprovision rancher/server') {
-	  sh "docker run --rm  " +
-	    "-v jenkins_home:/var/jenkins_home " +
-	    "--env-file .env " +
-      "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.deprovision\'"
-	}
+          if ( "false" == "${PIPELINE_DEPROVISION_STOP}" ) {
 
-	if ( "false" == "${PIPELINE_DEPROVISION_STOP}" ) {
+          // stage ('provision AWS') {
+          //   sh "docker run --rm  " +
+          //     "-v jenkins_home:/var/jenkins_home " +
+          //     "--env-file .env " +
+          //     "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke aws.provision\'"
+          // }
 
-	  // stage ('provision AWS') {
-	  //   sh "docker run --rm  " +
-	  //     "-v jenkins_home:/var/jenkins_home " +
-	  //     "--env-file .env " +
-	  //     "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke aws.provision\'"
-	  // }
-
-	  stage('provision rancher/server') {
-	    sh "docker run --rm  " +
-	      "-v jenkins_home:/var/jenkins_home " +
-	      "--env-file .env " +
-        "-e WORKSPACE_DIR=\"\$(pwd)\" " +
-        "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.provision\'"
-	  }
-
-	  stage ('configure rancher/server') {
-	    sh "docker run --rm  " +
-	      "-v jenkins_home:/var/jenkins_home " +
-	      "--env-file .env " +
-        "-e WORKSPACE_DIR=\"\$(pwd)\" " +
-        "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.configure\'"
-	  }
-
-	    stage ('provision Rancher Agents') {
-	      sh "docker run --rm  " +
-		"-v jenkins_home:/var/jenkins_home " +
-		"--env-file .env " +
-    "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.provision\'"
-	    }
-
-	  if ( "false" == "${PIPELINE_PROVISION_STOP}" ) {
-	    stage ('wait for infra catalogs to settle...') {
-	      post_server_wait = post_server_wait()
-	      withEnv(["PIPELINE_POST_SERVER_WAIT=${post_server_wait}"]) {
-	        sh "echo 'Sleeping for ${PIPELINE_POST_SERVER_WAIT} seconds while we wait on infrastructure catalogs to deploy to Agents....'"
-                sh "sleep ${PIPELINE_POST_SERVER_WAIT}"
-              }
+            stage('provision rancher/server') {
+              sh "docker run --rm  " +
+                "-v jenkins_home:/var/jenkins_home " +
+                "--env-file .env " +
+                "-e WORKSPACE_DIR=\"\$(pwd)\" " +
+                "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.provision\'"
             }
 
-	    stage ('run validation tests') {
+            stage ('configure rancher/server') {
+              sh "docker run --rm  " +
+                "-v jenkins_home:/var/jenkins_home " +
+                "--env-file .env " +
+                "-e WORKSPACE_DIR=\"\$(pwd)\" " +
+                "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.configure\'"
+            }
 
-	      CATTLE_TEST_URL = readFile(cattle_test_url_filename()).trim()
-        PROJECT_ID = readFile(project_id_filename()).trim()
+            stage ('provision Rancher Agents') {
+              sh "docker run --rm  " +
+          "-v jenkins_home:/var/jenkins_home " +
+          "--env-file .env " +
+          "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.provision\'"
+            }
 
-	      withEnv(["CATTLE_TEST_URL=${CATTLE_TEST_URL}", "PROJECT_ID=${PROJECT_ID}", "ACCESS_KEY=test", "SECRET_KEY=test"]) {
-		sh "git clone https://github.com/rancher/validation-tests"
-		try {
-		def cmd = validation_tests_cmd()
-		sh "${cmd}"
-		} catch(err) {
-		  echo 'Test run had failures. Collecting results...'
-		}
-	      }
+            if ( "false" == "${PIPELINE_PROVISION_STOP}" ) {
+              stage ('wait for infra catalogs to settle...') {
+                post_server_wait = post_server_wait()
+                withEnv(["PIPELINE_POST_SERVER_WAIT=${post_server_wait}"]) {
+                  sh "echo 'Sleeping for ${PIPELINE_POST_SERVER_WAIT} seconds while we wait on infrastructure catalogs to deploy to Agents....'"
+                  sh "sleep ${PIPELINE_POST_SERVER_WAIT}"
+                }
+              }
 
-	      step([$class: 'JUnitResultArchiver', testResults: '**/results.xml'])
-	    }
+              stage ('run validation tests') {
+                CATTLE_TEST_URL = readFile(cattle_test_url_filename()).trim()
+                PROJECT_ID = readFile(project_id_filename()).trim()
 
-	    stage ('deprovision Rancher Agents') {
-	      sh "docker run --rm  " +
-		"-v jenkins_home:/var/jenkins_home " +
-		"--env-file .env " +
-    "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.deprovision\'"
-	    }
+                withEnv(["CATTLE_TEST_URL=${CATTLE_TEST_URL}", "PROJECT_ID=${PROJECT_ID}", "ACCESS_KEY=test", "SECRET_KEY=test"]) {
+                  sh "git clone https://github.com/rancher/validation-tests"
+                  try {
+                    def cmd = validation_tests_cmd()
+                    sh "${cmd}"
+                  } catch(err) {
+                    echo 'Test run had failures. Collecting results...'
+                  }
+                }
 
-	    stage ('deprovision rancher/server') {
-	      sh "docker run --rm  " +
-		"-v jenkins_home:/var/jenkins_home " +
-		"--env-file .env " +
-    "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.deprovision\'"
-	    }
-	  } // PIPELINE_PROVISION_STOP
-	} // PIPELINE_DEPROVISION_STOP
+                step([$class: 'JUnitResultArchiver', testResults: '**/results.xml'])
+              }
+
+              stage ('deprovision Rancher Agents') {
+                sh "docker run --rm  " +
+            "-v jenkins_home:/var/jenkins_home " +
+            "--env-file .env " +
+            "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_agents.deprovision\'"
+              }
+
+              stage ('deprovision rancher/server') {
+                sh "docker run --rm  " +
+            "-v jenkins_home:/var/jenkins_home " +
+            "--env-file .env " +
+            "rancherlabs/ci-validation-tests /bin/bash -c \'cd \"\$(pwd)\" && invoke rancher_server.deprovision\'"
+              }
+            } // PIPELINE_PROVISION_STOP
+          } // PIPELINE_DEPROVISION_STOP
+        } // creds
       } // wrap
     } // node
   } catch(err) { currentBuild.result = 'FAILURE' }
